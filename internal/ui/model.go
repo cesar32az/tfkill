@@ -251,6 +251,9 @@ func (m model) View() string {
 		// Style the (already-truncated) path.
 		var pathCol string
 		switch {
+		case m.deleted[i] && m.cursor == i:
+			icon = grayStyle.Render("▶ ")
+			pathCol = grayStyle.Render(rawPath)
 		case m.deleted[i]:
 			icon = secondaryStyle.Render("✔ ")
 			pathCol = grayStyle.Render(rawPath)
