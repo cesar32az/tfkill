@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -19,12 +20,15 @@ type scanFinishedMsg struct {
 }
 
 type model struct {
-	dir             string
-	dryRun          bool
+	dir        string
+	dryRun     bool
+	ctx        context.Context
+	cancelScan context.CancelFunc
+
 	results         []scanner.Result
-	deleted         []bool  // parallel to results; tracks UI-level deletion state
-	deleteErr       string  // last delete failure message, shown in footer
-	scanErr         error   // non-fatal walk errors surfaced to the user
+	deleted         []bool // parallel to results; tracks UI-level deletion state
+	deleteErr       string // last delete failure message, shown in footer
+	scanErr         error  // non-fatal walk errors surfaced to the user
 	cursor          int
 	totalSaved      int64
 	totalReleasable int64
@@ -40,19 +44,23 @@ func InitialModel(dir string, dryRun bool) model {
 	s.Spinner = spinner.Dot
 	s.Style = warningStyle
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return model{
 		dir:        dir,
 		dryRun:     dryRun,
+		ctx:        ctx,
+		cancelScan: cancel,
 		isScanning: true,
 		spinner:    s,
 	}
 }
 
-// runScan runs the scanner in a goroutine and returns the result as a tea.Msg.
-func runScan(dir string) tea.Cmd {
+// runScan runs the scanner in the background and returns the result as a tea.Msg.
+func runScan(ctx context.Context, dir string) tea.Cmd {
 	return func() tea.Msg {
 		start := time.Now()
-		res, err := scanner.Scan(dir)
+		res, err := scanner.Scan(ctx, dir)
 		return scanFinishedMsg{
 			results:  res,
 			duration: time.Since(start),
@@ -62,17 +70,22 @@ func runScan(dir string) tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, runScan(m.dir))
+	return tea.Batch(m.spinner.Tick, runScan(m.ctx, m.dir))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case scanFinishedMsg:
-		m.results = msg.results
+		m.cancelScan() // scan is done, release context resources
+		m.results = make([]scanner.Result, len(msg.results))
+		copy(m.results, msg.results)
 		m.deleted = make([]bool, len(msg.results))
 		m.scanDuration = msg.duration
-		m.scanErr = msg.err
+		// Ignore context.Canceled — that means the user quit during scan intentionally.
+		if msg.err != nil && msg.err != context.Canceled {
+			m.scanErr = msg.err
+		}
 		m.isScanning = false
 		for _, r := range m.results {
 			m.totalReleasable += r.Size
@@ -87,6 +100,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.isScanning {
 			if msg.String() == "ctrl+c" || msg.String() == "q" {
+				m.cancelScan() // stop the scanner goroutine
 				return m, tea.Quit
 			}
 			return m, nil

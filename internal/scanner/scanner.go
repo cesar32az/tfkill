@@ -1,10 +1,12 @@
 package scanner
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 )
 
@@ -18,7 +20,10 @@ type Result struct {
 
 // Scan walks rootDir and returns all .terraform and .terragrunt-cache directories
 // it finds, along with a joined error of any directories that could not be accessed.
-func Scan(rootDir string) ([]Result, error) {
+//
+// The walk stops early if ctx is cancelled; results collected up to that point
+// are still returned alongside ctx.Err().
+func Scan(ctx context.Context, rootDir string) ([]Result, error) {
 	var (
 		results  []Result
 		mu       sync.Mutex
@@ -26,7 +31,14 @@ func Scan(rootDir string) ([]Result, error) {
 		walkErrs []error
 	)
 
+	// Semaphore: cap concurrent directory workers to avoid spawning an
+	// unbounded number of goroutines on repos with thousands of cache dirs.
+	sem := make(chan struct{}, runtime.NumCPU())
+
 	filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return fs.SkipAll
+		}
 		if err != nil {
 			walkErrs = append(walkErrs, err)
 			return nil
@@ -36,9 +48,15 @@ func Scan(rootDir string) ([]Result, error) {
 		}
 
 		if d.Name() == ".terraform" || d.Name() == ".terragrunt-cache" {
+			sem <- struct{}{} // acquire slot before launching goroutine
 			wg.Add(1)
 			go func(p string) {
 				defer wg.Done()
+				defer func() { <-sem }()
+
+				if ctx.Err() != nil {
+					return
+				}
 
 				// Compute size and state check before taking the lock
 				// to avoid holding it during slow I/O.
@@ -60,6 +78,10 @@ func Scan(rootDir string) ([]Result, error) {
 	})
 
 	wg.Wait()
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		walkErrs = append(walkErrs, ctxErr)
+	}
 	return results, errors.Join(walkErrs...)
 }
 
