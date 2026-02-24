@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -238,20 +239,37 @@ func (m model) View() string {
 		// Icon column
 		icon := "  "
 
-		// Path column — styled then padded to fixed width via lipgloss
-		pathStyle := lipgloss.NewStyle().Width(pw).MaxWidth(pw)
+		// Truncate path to pw runes before styling so lipgloss.Width()
+		// returns the true visible length we need for dot-leader math.
+		rawPath := res.Path
+		pathRunes := []rune(rawPath)
+		if len(pathRunes) > pw {
+			rawPath = string(pathRunes[:pw-1]) + "…"
+		}
+		visLen := len([]rune(rawPath))
+
+		// Style the (already-truncated) path.
+		var pathCol string
 		switch {
 		case m.deleted[i]:
 			icon = secondaryStyle.Render("✔ ")
-			pathStyle = pathStyle.Foreground(subtle)
+			pathCol = grayStyle.Render(rawPath)
 		case m.cursor == i && m.confirmMode:
 			icon = selectedStyle.Render("▶ ")
-			pathStyle = pathStyle.Foreground(orange).Bold(true)
+			pathCol = warningStyle.Bold(true).Render(rawPath)
 		case m.cursor == i:
 			icon = selectedStyle.Render("▶ ")
-			pathStyle = pathStyle.Foreground(purple).Bold(true)
+			pathCol = selectedStyle.Render(rawPath)
+		default:
+			pathCol = rawPath
 		}
-		pathCol := pathStyle.Render(res.Path)
+
+		// Dot leader: fills the gap between path and size column.
+		dotsCount := pw - visLen - 2 // -2 for the spaces flanking the dots
+		if dotsCount < 1 {
+			dotsCount = 1
+		}
+		dots := grayStyle.Render(strings.Repeat("·", dotsCount))
 
 		// Size column — right-aligned, fixed width
 		sizeCol := lipgloss.NewStyle().
@@ -266,7 +284,7 @@ func (m model) View() string {
 			warnCol = warningStyle.Render(" ⚠  local state")
 		}
 
-		s += icon + pathCol + "  " + sizeCol + warnCol + "\n"
+		s += icon + pathCol + " " + dots + " " + sizeCol + warnCol + "\n"
 	}
 
 	// 4. FOOTER
