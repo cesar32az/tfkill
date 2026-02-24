@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -11,16 +12,23 @@ import (
 	"github.com/cesar32az/tfkill/internal/scanner"
 )
 
-// Custom message sent when the scanner finishes
+// scanFinishedMsg is sent by runScan when the scanner completes.
 type scanFinishedMsg struct {
 	results  []scanner.Result
 	duration time.Duration
+	err      error // non-nil when some directories could not be accessed
 }
 
 type model struct {
-	dir             string
-	dryRun          bool
+	dir        string
+	dryRun     bool
+	ctx        context.Context
+	cancelScan context.CancelFunc
+
 	results         []scanner.Result
+	deleted         []bool // parallel to results; tracks UI-level deletion state
+	deleteErr       string // last delete failure message, shown in footer
+	scanErr         error  // non-fatal walk errors surfaced to the user
 	cursor          int
 	totalSaved      int64
 	totalReleasable int64
@@ -36,59 +44,70 @@ func InitialModel(dir string, dryRun bool) model {
 	s.Spinner = spinner.Dot
 	s.Style = warningStyle
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return model{
 		dir:        dir,
 		dryRun:     dryRun,
+		ctx:        ctx,
+		cancelScan: cancel,
 		isScanning: true,
 		spinner:    s,
 	}
 }
 
-// Command that runs the scanner in the background
-func runScan(dir string) tea.Cmd {
+// runScan runs the scanner in the background and returns the result as a tea.Msg.
+func runScan(ctx context.Context, dir string) tea.Cmd {
 	return func() tea.Msg {
 		start := time.Now()
-		res := scanner.Scan(dir)
+		res, err := scanner.Scan(ctx, dir)
 		return scanFinishedMsg{
 			results:  res,
 			duration: time.Since(start),
+			err:      err,
 		}
 	}
 }
 
-// Init starts the spinner and scanner at the same time
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, runScan(m.dir))
+	return tea.Batch(m.spinner.Tick, runScan(m.ctx, m.dir))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
-	// If we receive the scanner results
 	case scanFinishedMsg:
-		m.results = msg.results
+		m.cancelScan() // scan is done, release context resources
+		m.results = make([]scanner.Result, len(msg.results))
+		copy(m.results, msg.results)
+		m.deleted = make([]bool, len(msg.results))
 		m.scanDuration = msg.duration
+		// Ignore context.Canceled — that means the user quit during scan intentionally.
+		if msg.err != nil && msg.err != context.Canceled {
+			m.scanErr = msg.err
+		}
 		m.isScanning = false
-		// Calculate the total space that can be freed
 		for _, r := range m.results {
 			m.totalReleasable += r.Size
 		}
 		return m, nil
 
-	// Spinner animation
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
-	// Keyboard events
 	case tea.KeyMsg:
 		if m.isScanning {
 			if msg.String() == "ctrl+c" || msg.String() == "q" {
+				m.cancelScan() // stop the scanner goroutine
 				return m, tea.Quit
 			}
-			return m, nil // Block other keys while scanning
+			return m, nil
 		}
+
+		// Clear any previous delete error on the next keypress.
+		m.deleteErr = ""
 
 		if m.confirmMode {
 			switch msg.String() {
@@ -105,13 +124,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "up", "k":
-			if m.cursor > 0 { m.cursor-- }
+			if m.cursor > 0 {
+				m.cursor--
+			}
 		case "down", "j":
-			if m.cursor < len(m.results)-1 { m.cursor++ }
+			if m.cursor < len(m.results)-1 {
+				m.cursor++
+			}
 		case " ":
 			i := m.cursor
-			if m.results[i].Deleted { return m, nil }
-
+			if m.deleted[i] {
+				return m, nil
+			}
 			if m.results[i].HasState {
 				m.confirmMode = true
 			} else {
@@ -125,15 +149,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) deleteCurrent() {
 	i := m.cursor
 	if m.dryRun {
-		m.results[i].Deleted = true
+		m.deleted[i] = true
 		m.totalSaved += m.results[i].Size
 		return
 	}
-	err := os.RemoveAll(m.results[i].Path)
-	if err == nil {
-		m.results[i].Deleted = true
-		m.totalSaved += m.results[i].Size
+	if err := os.RemoveAll(m.results[i].Path); err != nil {
+		m.deleteErr = fmt.Sprintf("Error deleting %s: %v", m.results[i].Path, err)
+		return
 	}
+	m.deleted[i] = true
+	m.totalSaved += m.results[i].Size
 }
 
 func (m model) View() string {
@@ -142,7 +167,7 @@ func (m model) View() string {
 		return fmt.Sprintf("\n  %s Scanning directories in: %s...\n\n", m.spinner.View(), m.dir)
 	}
 
-	// 2. NPKILL STYLE HEADER
+	// 2. HEADER
 	logo := selectedStyle.Render(`
   _    __ _    _  _  _
  | |_ / _| | _(_)| || |
@@ -164,16 +189,21 @@ func (m model) View() string {
 		dryRunBadge = "\n" + warningStyle.Bold(true).Render("[ DRY RUN — no files will be deleted ]")
 	}
 
+	scanWarn := ""
+	if m.scanErr != nil {
+		scanWarn = "\n" + warningStyle.Render(fmt.Sprintf("⚠ Some directories could not be read: %v", m.scanErr))
+	}
+
 	stats := fmt.Sprintf(
-		"Releasable space: %s\n%s%s\nSearch completed  %s%s",
+		"Releasable space: %s\n%s%s\nSearch completed  %s%s%s",
 		secondaryStyle.Render(fmt.Sprintf("%.2f MB", releasableMB)),
 		savedLabel,
 		selectedStyle.Render(fmt.Sprintf("%.2f MB", savedMB)),
 		grayStyle.Render(fmt.Sprintf("%.2fs", m.scanDuration.Seconds())),
 		dryRunBadge,
+		scanWarn,
 	)
 
-	// Join the logo and statistics in two columns
 	header := lipgloss.JoinHorizontal(lipgloss.Center, logo, "    ", stats)
 
 	// 3. RESULTS
@@ -187,7 +217,7 @@ func (m model) View() string {
 		statusIcon := "  "
 		lineText := res.Path
 
-		if res.Deleted {
+		if m.deleted[i] {
 			statusIcon = secondaryStyle.Render("✔ ")
 			lineText = grayStyle.Render(res.Path)
 		} else if m.cursor == i {
@@ -200,7 +230,7 @@ func (m model) View() string {
 		}
 
 		warning := ""
-		if res.HasState && !res.Deleted {
+		if res.HasState && !m.deleted[i] {
 			warning = warningStyle.Render(" ⚠️ local state")
 		}
 
@@ -209,7 +239,9 @@ func (m model) View() string {
 	}
 
 	// 4. FOOTER
-	if m.confirmMode {
+	if m.deleteErr != "" {
+		s += "\n" + warningStyle.Bold(true).Render(m.deleteErr)
+	} else if m.confirmMode {
 		action := "Delete"
 		if m.dryRun {
 			action = "Mark as would-delete"
@@ -223,4 +255,3 @@ func (m model) View() string {
 
 	return s
 }
-

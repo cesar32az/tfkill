@@ -37,11 +37,13 @@ var rootCmd = &cobra.Command{
 	},
 }
 
-func Execute() {
+func init() {
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Scan and report space without deleting anything")
+}
+
+func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 }
-
