@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -12,11 +13,21 @@ import (
 	"github.com/cesar32az/tfkill/internal/scanner"
 )
 
+const (
+	// Fixed column widths (chars).
+	sizeColWidth    = 10 // "1023.45 MB"
+	warningColWidth = 16 // " ⚠️ local state"
+	iconWidth       = 2  // "▶ " / "✔ "
+	rowPadding      = 4  // gaps between columns
+	minPathWidth    = 20
+	defaultWidth    = 100
+)
+
 // scanFinishedMsg is sent by runScan when the scanner completes.
 type scanFinishedMsg struct {
 	results  []scanner.Result
 	duration time.Duration
-	err      error // non-nil when some directories could not be accessed
+	err      error
 }
 
 type model struct {
@@ -25,10 +36,13 @@ type model struct {
 	ctx        context.Context
 	cancelScan context.CancelFunc
 
+	width  int
+	height int
+
 	results         []scanner.Result
-	deleted         []bool // parallel to results; tracks UI-level deletion state
-	deleteErr       string // last delete failure message, shown in footer
-	scanErr         error  // non-fatal walk errors surfaced to the user
+	deleted         []bool
+	deleteErr       string
+	scanErr         error
 	cursor          int
 	totalSaved      int64
 	totalReleasable int64
@@ -53,19 +67,15 @@ func InitialModel(dir string, dryRun bool) model {
 		cancelScan: cancel,
 		isScanning: true,
 		spinner:    s,
+		width:      defaultWidth,
 	}
 }
 
-// runScan runs the scanner in the background and returns the result as a tea.Msg.
 func runScan(ctx context.Context, dir string) tea.Cmd {
 	return func() tea.Msg {
 		start := time.Now()
 		res, err := scanner.Scan(ctx, dir)
-		return scanFinishedMsg{
-			results:  res,
-			duration: time.Since(start),
-			err:      err,
-		}
+		return scanFinishedMsg{results: res, duration: time.Since(start), err: err}
 	}
 }
 
@@ -76,13 +86,17 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+
 	case scanFinishedMsg:
-		m.cancelScan() // scan is done, release context resources
+		m.cancelScan()
 		m.results = make([]scanner.Result, len(msg.results))
 		copy(m.results, msg.results)
 		m.deleted = make([]bool, len(msg.results))
 		m.scanDuration = msg.duration
-		// Ignore context.Canceled — that means the user quit during scan intentionally.
 		if msg.err != nil && msg.err != context.Canceled {
 			m.scanErr = msg.err
 		}
@@ -100,13 +114,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.isScanning {
 			if msg.String() == "ctrl+c" || msg.String() == "q" {
-				m.cancelScan() // stop the scanner goroutine
+				m.cancelScan()
 				return m, tea.Quit
 			}
 			return m, nil
 		}
 
-		// Clear any previous delete error on the next keypress.
 		m.deleteErr = ""
 
 		if m.confirmMode {
@@ -154,17 +167,28 @@ func (m *model) deleteCurrent() {
 		return
 	}
 	if err := os.RemoveAll(m.results[i].Path); err != nil {
-		m.deleteErr = fmt.Sprintf("Error deleting %s: %v", m.results[i].Path, err)
+		m.deleteErr = fmt.Sprintf("cannot delete %s: %v", m.results[i].Path, err)
 		return
 	}
 	m.deleted[i] = true
 	m.totalSaved += m.results[i].Size
 }
 
+// pathWidth returns the available width for the path column given the
+// current terminal width.
+func (m model) pathWidth() int {
+	fixed := iconWidth + sizeColWidth + warningColWidth + rowPadding
+	w := m.width - fixed
+	if w < minPathWidth {
+		return minPathWidth
+	}
+	return w
+}
+
 func (m model) View() string {
 	// 1. LOADING SCREEN
 	if m.isScanning {
-		return fmt.Sprintf("\n  %s Scanning directories in: %s...\n\n", m.spinner.View(), m.dir)
+		return fmt.Sprintf("\n  %s Scanning %s…\n\n", m.spinner.View(), grayStyle.Render(m.dir))
 	}
 
 	// 2. HEADER
@@ -176,12 +200,9 @@ func (m model) View() string {
   \__|_| |_|\_\_||_||_|
 `)
 
-	releasableMB := float64(m.totalReleasable) / 1024 / 1024
-	savedMB := float64(m.totalSaved) / 1024 / 1024
-
-	savedLabel := "Space saved:      "
+	savedLabel := "Space saved:  "
 	if m.dryRun {
-		savedLabel = "Would free:       "
+		savedLabel = "Would free:   "
 	}
 
 	dryRunBadge := ""
@@ -191,67 +212,117 @@ func (m model) View() string {
 
 	scanWarn := ""
 	if m.scanErr != nil {
-		scanWarn = "\n" + warningStyle.Render(fmt.Sprintf("⚠ Some directories could not be read: %v", m.scanErr))
+		scanWarn = "\n" + warningStyle.Render(fmt.Sprintf("⚠  Some directories could not be read: %v", m.scanErr))
 	}
 
 	stats := fmt.Sprintf(
-		"Releasable space: %s\n%s%s\nSearch completed  %s%s%s",
-		secondaryStyle.Render(fmt.Sprintf("%.2f MB", releasableMB)),
+		"Releasable:   %s\n%s%s\nCompleted in  %s%s%s",
+		secondaryStyle.Render(formatSize(m.totalReleasable)),
 		savedLabel,
-		selectedStyle.Render(fmt.Sprintf("%.2f MB", savedMB)),
+		selectedStyle.Render(formatSize(m.totalSaved)),
 		grayStyle.Render(fmt.Sprintf("%.2fs", m.scanDuration.Seconds())),
 		dryRunBadge,
 		scanWarn,
 	)
 
 	header := lipgloss.JoinHorizontal(lipgloss.Center, logo, "    ", stats)
-
-	// 3. RESULTS
 	s := "\n" + header + "\n\n"
 
+	// 3. RESULTS
 	if len(m.results) == 0 {
-		return s + "No unnecessary .terraform folders found.\n"
+		return s + secondaryStyle.Render("✓  No .terraform or .terragrunt-cache directories found.\n")
 	}
 
+	pw := m.pathWidth()
+
 	for i, res := range m.results {
-		statusIcon := "  "
-		lineText := res.Path
+		// Icon column
+		icon := "  "
 
-		if m.deleted[i] {
-			statusIcon = secondaryStyle.Render("✔ ")
-			lineText = grayStyle.Render(res.Path)
-		} else if m.cursor == i {
-			statusIcon = selectedStyle.Render("▶ ")
-			if m.confirmMode {
-				lineText = warningStyle.Bold(true).Render(res.Path)
-			} else {
-				lineText = selectedStyle.Render(res.Path)
-			}
+		// Truncate path to pw runes before styling so lipgloss.Width()
+		// returns the true visible length we need for dot-leader math.
+		rawPath := res.Path
+		pathRunes := []rune(rawPath)
+		if len(pathRunes) > pw {
+			rawPath = string(pathRunes[:pw-1]) + "…"
+		}
+		visLen := len([]rune(rawPath))
+
+		// Style the (already-truncated) path.
+		var pathCol string
+		switch {
+		case m.deleted[i]:
+			icon = secondaryStyle.Render("✔ ")
+			pathCol = grayStyle.Render(rawPath)
+		case m.cursor == i && m.confirmMode:
+			icon = selectedStyle.Render("▶ ")
+			pathCol = warningStyle.Bold(true).Render(rawPath)
+		case m.cursor == i:
+			icon = selectedStyle.Render("▶ ")
+			pathCol = selectedStyle.Render(rawPath)
+		default:
+			pathCol = rawPath
 		}
 
-		warning := ""
+		// Dot leader: fills the gap between path and size column.
+		dotsCount := pw - visLen - 2 // -2 for the spaces flanking the dots
+		if dotsCount < 1 {
+			dotsCount = 1
+		}
+		dots := grayStyle.Render(strings.Repeat("·", dotsCount))
+
+		// Size column — right-aligned, fixed width
+		sizeCol := lipgloss.NewStyle().
+			Width(sizeColWidth).
+			Align(lipgloss.Right).
+			Foreground(green).
+			Render(formatSize(res.Size))
+
+		// Warning column
+		warnCol := ""
 		if res.HasState && !m.deleted[i] {
-			warning = warningStyle.Render(" ⚠️ local state")
+			warnCol = warningStyle.Render(" ⚠  local state")
 		}
 
-		sizeStr := secondaryStyle.Render(fmt.Sprintf("%.2f MB", float64(res.Size)/1024/1024))
-		s += fmt.Sprintf("%s %-50s %s %s\n", statusIcon, lineText, sizeStr, warning)
+		s += icon + pathCol + " " + dots + " " + sizeCol + warnCol + "\n"
 	}
 
 	// 4. FOOTER
+	s += "\n"
 	if m.deleteErr != "" {
-		s += "\n" + warningStyle.Bold(true).Render(m.deleteErr)
+		s += warningStyle.Bold(true).Render("✗  " + m.deleteErr)
 	} else if m.confirmMode {
-		action := "Delete"
+		action := "delete"
 		if m.dryRun {
-			action = "Mark as would-delete"
+			action = "mark as would-delete"
 		}
-		s += "\n" + warningStyle.Bold(true).Render(fmt.Sprintf("WARNING! This folder has a local state. %s anyway? (y/n)", action))
+		s += warningStyle.Bold(true).Render(
+			fmt.Sprintf("⚠  Local state detected. %s anyway? ", action),
+		)
+		s += renderHelp([][2]string{{"y", "yes"}, {"n / esc", "no"}})
 	} else if m.dryRun {
-		s += "\n" + helpStyle.Render("UP/DOWN to select - SPACE to simulate delete - Q to quit")
+		s += renderHelp([][2]string{{"↑↓ / jk", "navigate"}, {"space", "simulate delete"}, {"q", "quit"}})
 	} else {
-		s += "\n" + helpStyle.Render("UP/DOWN to select - SPACE to delete - Q to quit")
+		s += renderHelp([][2]string{{"↑↓ / jk", "navigate"}, {"space", "delete"}, {"q", "quit"}})
 	}
 
 	return s
+}
+
+// formatSize returns a human-readable size string that adapts its unit
+// to the magnitude of bytes: KB below 1 MB, MB below 1 GB, GB otherwise.
+func formatSize(bytes int64) string {
+	const (
+		kb = 1024
+		mb = kb * 1024
+		gb = mb * 1024
+	)
+	switch {
+	case bytes >= gb:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/gb)
+	case bytes >= mb:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/mb)
+	default:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/kb)
+	}
 }
