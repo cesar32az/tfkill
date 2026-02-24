@@ -1,3 +1,11 @@
+# [1.2.0](https://github.com/cesar32az/tfkill/compare/v1.1.0...v1.2.0) (2026-02-24)
+
+
+### Features
+
+* **ui:** add dot leader between path and size columns ([71e33b9](https://github.com/cesar32az/tfkill/commit/71e33b96ccf22d2808b43fff097df65100349f41))
+* **ui:** responsive layout, adaptive sizes, and styled key chips ([4b9f633](https://github.com/cesar32az/tfkill/commit/4b9f6334982dba6708069814c79adfe5ca957abd)), closes [#2](https://github.com/cesar32az/tfkill/issues/2) [#3](https://github.com/cesar32az/tfkill/issues/3) [#5](https://github.com/cesar32az/tfkill/issues/5) [#383838](https://github.com/cesar32az/tfkill/issues/383838) [#6](https://github.com/cesar32az/tfkill/issues/6)
+
 # [1.1.0](https://github.com/cesar32az/tfkill/compare/v1.0.0...v1.1.0) (2026-02-24)
 
 
