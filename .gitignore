@@ -43,7 +43,7 @@ terraform/
 
 # Node (semantic-release)
 node_modules/
-package-lock.json
+
 
 # GoReleaser output
 dist/
