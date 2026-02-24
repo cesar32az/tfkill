@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A terminal UI tool (inspired by npkill) that recursively scans a directory for `.terraform` and `.terragrunt-cache` folders and lets the user interactively delete them to free disk space. It warns before deleting folders that contain a local `terraform.tfstate`.
 
+```
+tfkill [path]          # scan path (defaults to cwd)
+tfkill --dry-run       # simulate: mark folders as deleted without touching disk
+tfkill /some/path --dry-run
+```
+
 ## Commands
 
 ```bash

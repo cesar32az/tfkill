@@ -19,25 +19,26 @@ type scanFinishedMsg struct {
 
 type model struct {
 	dir             string
+	dryRun          bool
 	results         []scanner.Result
 	cursor          int
 	totalSaved      int64
 	totalReleasable int64
 	confirmMode     bool
 
-	// New fields for UX
 	isScanning   bool
 	scanDuration time.Duration
 	spinner      spinner.Model
 }
 
-func InitialModel(dir string) model {
+func InitialModel(dir string, dryRun bool) model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = warningStyle
 
 	return model{
 		dir:        dir,
+		dryRun:     dryRun,
 		isScanning: true,
 		spinner:    s,
 	}
@@ -123,6 +124,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) deleteCurrent() {
 	i := m.cursor
+	if m.dryRun {
+		m.results[i].Deleted = true
+		m.totalSaved += m.results[i].Size
+		return
+	}
 	err := os.RemoveAll(m.results[i].Path)
 	if err == nil {
 		m.results[i].Deleted = true
@@ -148,11 +154,23 @@ func (m model) View() string {
 	releasableMB := float64(m.totalReleasable) / 1024 / 1024
 	savedMB := float64(m.totalSaved) / 1024 / 1024
 
+	savedLabel := "Space saved:      "
+	if m.dryRun {
+		savedLabel = "Would free:       "
+	}
+
+	dryRunBadge := ""
+	if m.dryRun {
+		dryRunBadge = "\n" + warningStyle.Bold(true).Render("[ DRY RUN — no files will be deleted ]")
+	}
+
 	stats := fmt.Sprintf(
-		"Releasable space: %s\nSpace saved:      %s\nSearch completed  %s",
+		"Releasable space: %s\n%s%s\nSearch completed  %s%s",
 		secondaryStyle.Render(fmt.Sprintf("%.2f MB", releasableMB)),
+		savedLabel,
 		selectedStyle.Render(fmt.Sprintf("%.2f MB", savedMB)),
 		grayStyle.Render(fmt.Sprintf("%.2fs", m.scanDuration.Seconds())),
+		dryRunBadge,
 	)
 
 	// Join the logo and statistics in two columns
@@ -192,7 +210,13 @@ func (m model) View() string {
 
 	// 4. FOOTER
 	if m.confirmMode {
-		s += "\n" + warningStyle.Bold(true).Render("WARNING! This folder has a local state. Delete anyway? (y/n)")
+		action := "Delete"
+		if m.dryRun {
+			action = "Mark as would-delete"
+		}
+		s += "\n" + warningStyle.Bold(true).Render(fmt.Sprintf("WARNING! This folder has a local state. %s anyway? (y/n)", action))
+	} else if m.dryRun {
+		s += "\n" + helpStyle.Render("UP/DOWN to select - SPACE to simulate delete - Q to quit")
 	} else {
 		s += "\n" + helpStyle.Render("UP/DOWN to select - SPACE to delete - Q to quit")
 	}
