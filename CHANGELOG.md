@@ -1,3 +1,17 @@
+# [1.1.0](https://github.com/cesar32az/tfkill/compare/v1.0.0...v1.1.0) (2026-02-24)
+
+
+### Bug Fixes
+
+* **cmd:** move --dry-run flag registration from Execute() to init() ([d4a6f46](https://github.com/cesar32az/tfkill/commit/d4a6f46461e72e5e133793a9f618e1a1ed3eed05))
+* **scanner:** resolve race condition, surface walk errors, remove UI state ([c3ff871](https://github.com/cesar32az/tfkill/commit/c3ff87173a6a5ba5a3602282104112bffa4d9fa2))
+* **ui:** surface delete errors and decouple deletion state from scanner ([42f1eb6](https://github.com/cesar32az/tfkill/commit/42f1eb6c7a9df74d7145ab433611f7c8b5ca8576))
+
+
+### Features
+
+* **scanner:** add worker pool and context cancellation support ([713b7c9](https://github.com/cesar32az/tfkill/commit/713b7c9b06af6d33b0b96ac5ae5dcbed555162f7))
+
 # 1.0.0 (2026-02-24)
 
 
