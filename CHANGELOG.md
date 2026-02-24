@@ -1,3 +1,10 @@
+## [1.2.1](https://github.com/cesar32az/tfkill/compare/v1.2.0...v1.2.1) (2026-02-24)
+
+
+### Bug Fixes
+
+* **ui:** keep cursor visible on already-deleted rows ([b271e2d](https://github.com/cesar32az/tfkill/commit/b271e2d9e6e3a8d7963d4ff8226409dce9856de8))
+
 # [1.2.0](https://github.com/cesar32az/tfkill/compare/v1.1.0...v1.2.0) (2026-02-24)
 
 
