@@ -43,7 +43,7 @@ ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH=amd64;; aarch64|arm64) ARCH=arm64
 curl -fsSL "https://github.com/cesar32az/tfkill/releases/download/v${VERSION}/tfkill_${VERSION}_${OS}_${ARCH}.tar.gz" \
   | tar -xz tfkill
 sudo mv tfkill /usr/local/bin/
-tfkill --version
+tfkill --help
 ```
 
 On macOS the binary is unsigned. If Gatekeeper blocks it, clear the quarantine flag once:
