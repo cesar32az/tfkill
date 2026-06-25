@@ -22,12 +22,69 @@ Interactive TUI for finding and deleting `.terraform` and `.terragrunt-cache` di
 
 ## Installation
 
-**Go install**
+Pick the method that matches your environment. Prebuilt binaries are published for
+Linux, macOS and Windows on each [release](https://github.com/cesar32az/tfkill/releases).
+
+| Platform | Architectures | Asset |
+|----------|---------------|-------|
+| Linux | `amd64`, `arm64` | `tfkill_<version>_linux_<arch>.tar.gz` |
+| macOS | `amd64` (Intel), `arm64` (Apple Silicon) | `tfkill_<version>_darwin_<arch>.tar.gz` |
+| Windows | `amd64` | `tfkill_<version>_windows_amd64.zip` |
+
+### Quick install (Linux / macOS)
+
+Auto-detects the latest version, your OS and architecture, then installs to `/usr/local/bin`:
+
+```bash
+VERSION=$(curl -fsSL https://api.github.com/repos/cesar32az/tfkill/releases/latest \
+  | grep -oE '"tag_name": *"[^"]+"' | cut -d'"' -f4 | tr -d v)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH=amd64;; aarch64|arm64) ARCH=arm64;; esac
+curl -fsSL "https://github.com/cesar32az/tfkill/releases/download/v${VERSION}/tfkill_${VERSION}_${OS}_${ARCH}.tar.gz" \
+  | tar -xz tfkill
+sudo mv tfkill /usr/local/bin/
+tfkill --version
+```
+
+On macOS the binary is unsigned. If Gatekeeper blocks it, clear the quarantine flag once:
+
+```bash
+xattr -d com.apple.quarantine /usr/local/bin/tfkill
+```
+
+### Go install
+
+Requires Go 1.21+. Installs into `$(go env GOPATH)/bin` — make sure that directory is on your `PATH`.
+
 ```bash
 go install github.com/cesar32az/tfkill@latest
 ```
 
-**Download binary** — grab the latest release for your platform from the [releases page](https://github.com/cesar32az/tfkill/releases).
+### Manual download
+
+Grab the asset for your platform from the [releases page](https://github.com/cesar32az/tfkill/releases) and extract it.
+
+**Linux / macOS**
+```bash
+tar -xzf tfkill_<version>_<os>_<arch>.tar.gz
+sudo mv tfkill /usr/local/bin/
+```
+
+**Windows (PowerShell)**
+```powershell
+Expand-Archive tfkill_<version>_windows_amd64.zip -DestinationPath .
+# Move tfkill.exe to a directory on your PATH, e.g.:
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\Programs\tfkill" | Out-Null
+Move-Item tfkill.exe "$env:LOCALAPPDATA\Programs\tfkill\"
+# Add that directory to your user PATH (one-time):
+[Environment]::SetEnvironmentVariable(
+  "Path",
+  "$([Environment]::GetEnvironmentVariable('Path','User'));$env:LOCALAPPDATA\Programs\tfkill",
+  "User")
+```
+
+Each release also ships a `tfkill_<version>_checksums.txt` file, so you can verify the
+download with `sha256sum -c` (Linux), `shasum -a 256 -c` (macOS) or `Get-FileHash` (Windows).
 
 ## Usage
 
