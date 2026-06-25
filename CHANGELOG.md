@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/cesar32az/tfkill/compare/v1.2.1...v1.3.0) (2026-06-25)
+
+
+### Features
+
+* add --version flag reporting build metadata ([7e557ac](https://github.com/cesar32az/tfkill/commit/7e557acf6de913b31d293a8d62bb56f141fd5948))
+
 ## [1.2.1](https://github.com/cesar32az/tfkill/compare/v1.2.0...v1.2.1) (2026-02-24)
 
 
