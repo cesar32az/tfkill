@@ -15,7 +15,7 @@ func scrolledModel(t *testing.T, n, width, height int) model {
 	for i := range res {
 		res[i] = scanner.Result{Path: fmt.Sprintf("/repo/stack-%03d/.terraform", i), Size: 1024}
 	}
-	var tm tea.Model = InitialModel("/repo", true)
+	var tm tea.Model = InitialModel("/repo", Options{DryRun: true})
 	tm, _ = tm.Update(scanFinishedMsg{results: res})
 	tm, _ = tm.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	return tm.(model)

@@ -3,13 +3,17 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/cesar32az/tfkill/internal/ui"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 )
 
-var dryRun bool
+var (
+	dryRun    bool
+	olderThan string
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "tfkill [path]",
@@ -28,7 +32,17 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
-		m := ui.InitialModel(dir, dryRun)
+		var age time.Duration
+		if olderThan != "" {
+			var err error
+			age, err = ui.ParseAge(olderThan)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error: --older-than:", err)
+				os.Exit(1)
+			}
+		}
+
+		m := ui.InitialModel(dir, ui.Options{DryRun: dryRun, OlderThan: age})
 		// Alt screen gives the TUI a fixed-size canvas so long result lists
 		// scroll inside the window instead of pushing the header off-screen.
 		p := tea.NewProgram(m, tea.WithAltScreen())
@@ -46,6 +60,7 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Scan and report space without deleting anything")
+	rootCmd.Flags().StringVar(&olderThan, "older-than", "", "Only show folders not modified for at least this long (e.g. 30d, 2w, 12h)")
 }
 
 // SetVersionInfo wires the build metadata into the root command so that
