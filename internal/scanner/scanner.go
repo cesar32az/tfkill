@@ -8,14 +8,47 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 )
+
+// Kind identifies which tool produced a cache directory.
+type Kind int
+
+const (
+	KindTerraform  Kind = iota // .terraform
+	KindTerragrunt             // .terragrunt-cache
+)
+
+// Progress is a snapshot of an in-flight scan, reported through
+// Options.OnProgress.
+type Progress struct {
+	DirsVisited int64 // directories walked so far
+	Found       int   // cache directories found so far
+	Bytes       int64 // total size of the cache directories sized so far
+}
+
+// Options tunes a scan. The zero value is valid.
+type Options struct {
+	// SkipDirs are directory names never descended into
+	// (nil means DefaultSkipDirs).
+	SkipDirs []string
+	// OnProgress, when set, is called periodically from scan goroutines.
+	// It must be safe for concurrent use and must not block.
+	OnProgress func(Progress)
+}
+
+// DefaultSkipDirs are heavy directories that never contain Terraform caches
+// worth reporting.
+var DefaultSkipDirs = []string{"node_modules", ".git", "vendor", ".venv", "venv", "__pycache__"}
 
 // Result holds metadata about a discovered cache directory.
 // It does not track UI-level state such as whether the entry has been deleted.
 type Result struct {
 	Path     string
 	Size     int64
-	HasState bool // true when a terraform.tfstate file exists inside the directory
+	HasState bool      // true when a terraform.tfstate file exists inside the directory (at any depth)
+	Kind     Kind      // which tool produced the directory
+	ModTime  time.Time // most recent modification time of any entry inside the directory
 }
 
 // Scan walks rootDir and returns all .terraform and .terragrunt-cache directories
@@ -23,7 +56,7 @@ type Result struct {
 //
 // The walk stops early if ctx is cancelled; results collected up to that point
 // are still returned alongside ctx.Err().
-func Scan(ctx context.Context, rootDir string) ([]Result, error) {
+func Scan(ctx context.Context, rootDir string, opts Options) ([]Result, error) {
 	var (
 		results  []Result
 		mu       sync.Mutex

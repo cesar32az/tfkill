@@ -78,7 +78,7 @@ func InitialModel(dir string, dryRun bool) model {
 func runScan(ctx context.Context, dir string) tea.Cmd {
 	return func() tea.Msg {
 		start := time.Now()
-		res, err := scanner.Scan(ctx, dir)
+		res, err := scanner.Scan(ctx, dir, scanner.Options{})
 		return scanFinishedMsg{results: res, duration: time.Since(start), err: err}
 	}
 }
