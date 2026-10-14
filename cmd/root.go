@@ -41,6 +41,14 @@ func init() {
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Scan and report space without deleting anything")
 }
 
+// SetVersionInfo wires the build metadata into the root command so that
+// `tfkill --version` reports the version, commit and build date.
+func SetVersionInfo(version, commit, date string) {
+	rootCmd.Version = version
+	rootCmd.SetVersionTemplate(
+		fmt.Sprintf("tfkill %s\ncommit: %s\nbuilt:  %s\n", version, commit, date))
+}
+
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
