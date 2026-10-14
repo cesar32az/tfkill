@@ -307,3 +307,28 @@ func TestViewHeightInAllModes(t *testing.T) {
 		t.Fatalf("confirm mode: %d lines", got)
 	}
 }
+
+func TestQuitWaitsForInflightDeletes(t *testing.T) {
+	m := scrolledModel(t, 3, 100, 40)
+	m.dryRun = false
+	m.inflight = 1
+	m.items[0].state = stateDeleting
+	m.queue = []int{1}
+	m.items[1].state = stateDeleting
+
+	tm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	m = tm.(model)
+	if cmd != nil || !m.quitting {
+		t.Fatalf("q with inflight deletes should wait, got quitting=%v cmd=%v", m.quitting, cmd)
+	}
+	if len(m.queue) != 0 || m.items[1].state != stateIdle {
+		t.Fatalf("pending queue should be dropped and its rows reset")
+	}
+	tm, cmd = m.Update(deleteFinishedMsg{index: 0})
+	if cmd == nil {
+		t.Fatalf("expected tea.Quit once the last removal finishes")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg")
+	}
+}

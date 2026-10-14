@@ -145,6 +145,7 @@ type model struct {
 
 	queue    []int // items waiting for a delete slot
 	inflight int
+	quitting bool // q pressed while removals were running; exit when they finish
 
 	isScanning   bool
 	scanDuration time.Duration
@@ -275,6 +276,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			it.state = stateDeleted
 			m.totalSaved += it.res.Size
 		}
+		if m.quitting {
+			if m.inflight == 0 {
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		return m, m.pump()
 
 	case spinner.TickMsg:
@@ -292,6 +299,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.deleteErr = ""
+
+		if m.quitting {
+			// Second ctrl+c forces exit even if removals are still running.
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 
 		if m.filterInput {
 			return m.updateFilterInput(msg)
@@ -323,7 +338,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "ctrl+c", "q":
-			return m, tea.Quit
+			return m.quit()
 		case "up", "k":
 			m.moveCursor(-1)
 		case "down", "j":
@@ -401,6 +416,21 @@ func (m model) updateFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// quit exits right away, or — when removals are running — drops the
+// pending queue and waits for in-flight ones so no folder is left
+// half-deleted.
+func (m model) quit() (tea.Model, tea.Cmd) {
+	if m.inflight == 0 {
+		return m, tea.Quit
+	}
+	for _, i := range m.queue {
+		m.items[i].state = stateIdle
+	}
+	m.queue = nil
+	m.quitting = true
+	return m, nil
+}
+
 // deleteCurrent handles space/d on the cursor row when nothing is marked.
 func (m model) deleteCurrent() (tea.Model, tea.Cmd) {
 	i, ok := m.currentItem()
@@ -443,6 +473,21 @@ func (m model) markedStats() (n int, size int64) {
 		}
 	}
 	return n, size
+}
+
+// markedHidden counts marked, idle items not in the current filtered view.
+func (m model) markedHidden() int {
+	visible := make(map[int]bool, len(m.view))
+	for _, i := range m.view {
+		visible[i] = true
+	}
+	n := 0
+	for i, it := range m.items {
+		if it.marked && it.state == stateIdle && !visible[i] {
+			n++
+		}
+	}
+	return n
 }
 
 func (m model) markedWithState() int {
@@ -838,6 +883,10 @@ func (m model) scrollIndicator(end int) string {
 
 func (m model) footerView() string {
 	switch {
+	case m.quitting:
+		return m.fitWidth(warningStyle.Bold(true).Render(
+			fmt.Sprintf("Waiting for %d deletion(s) to finish… ", m.inflight),
+		) + renderHelp([][2]string{{"ctrl+c", "force quit"}}))
 	case m.deleteErr != "":
 		return warningStyle.Bold(true).Width(m.width).Render("✗  " + m.deleteErr)
 	case m.filterInput:
@@ -850,6 +899,9 @@ func (m model) footerView() string {
 			verb = "Mark as would-delete:"
 		}
 		txt := fmt.Sprintf("⚠  %s %d folders (%s)?", verb, n, formatSize(size))
+		if h := m.markedHidden(); h > 0 {
+			txt += fmt.Sprintf(" %d hidden by filter.", h)
+		}
 		if k := m.markedWithState(); k > 0 {
 			txt += fmt.Sprintf(" %d contain local state.", k)
 		}
