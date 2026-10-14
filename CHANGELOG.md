@@ -1,3 +1,17 @@
+# [1.4.0](https://github.com/cesar32az/tfkill/compare/v1.3.0...v1.4.0) (2026-10-14)
+
+
+### Bug Fixes
+
+* **ui:** scroll long result lists inside the terminal ([da8f179](https://github.com/cesar32az/tfkill/commit/da8f179e52c80cee87d92ad0aaf502ce321791a5))
+* **ui:** wait for in-flight deletes on quit, show marks hidden by filter ([7a3bed7](https://github.com/cesar32az/tfkill/commit/7a3bed7052b1090262e461aa2ddd4261d2ecb421))
+
+
+### Features
+
+* **scanner:** skip heavy dirs, detect nested state, report progress and sort by size ([95d1aae](https://github.com/cesar32az/tfkill/commit/95d1aae80a6b417b595389f8231d9d09776e4bce))
+* **ui:** async delete, live progress, sort, filter, multi-select, age ([25fd912](https://github.com/cesar32az/tfkill/commit/25fd912e4f1afeddd64f86f68ca881b7adcc7511))
+
 # [1.3.0](https://github.com/cesar32az/tfkill/compare/v1.2.1...v1.3.0) (2026-06-25)
 
 
