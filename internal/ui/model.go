@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cesar32az/tfkill/internal/scanner"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/cesar32az/tfkill/internal/scanner"
 )
 
 const (
@@ -21,6 +21,9 @@ const (
 	rowPadding      = 4  // gaps between columns
 	minPathWidth    = 20
 	defaultWidth    = 100
+
+	// Below this terminal height the ASCII logo is hidden.
+	compactHeaderBelow = 24
 )
 
 // scanFinishedMsg is sent by runScan when the scanner completes.
@@ -44,6 +47,7 @@ type model struct {
 	deleteErr       string
 	scanErr         error
 	cursor          int
+	offset          int // index of the first result row shown in the list window
 	totalSaved      int64
 	totalReleasable int64
 	confirmMode     bool
@@ -89,6 +93,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.clampOffset()
 		return m, nil
 
 	case scanFinishedMsg:
@@ -104,6 +109,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, r := range m.results {
 			m.totalReleasable += r.Size
 		}
+		m.clampOffset()
 		return m, nil
 
 	case spinner.TickMsg:
@@ -137,14 +143,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.moveCursor(-1)
 		case "down", "j":
-			if m.cursor < len(m.results)-1 {
-				m.cursor++
-			}
+			m.moveCursor(1)
+		case "pgup", "ctrl+u", "ctrl+b":
+			m.moveCursor(-m.listHeight())
+		case "pgdown", "ctrl+d", "ctrl+f":
+			m.moveCursor(m.listHeight())
+		case "home", "g":
+			m.moveCursor(-len(m.results))
+		case "end", "G":
+			m.moveCursor(len(m.results))
 		case " ":
+			if len(m.results) == 0 {
+				return m, nil
+			}
 			i := m.cursor
 			if m.deleted[i] {
 				return m, nil
@@ -157,6 +170,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// moveCursor shifts the cursor by delta rows (clamped to the result range)
+// and scrolls the list window so the cursor stays visible.
+func (m *model) moveCursor(delta int) {
+	m.cursor += delta
+	if m.cursor > len(m.results)-1 {
+		m.cursor = len(m.results) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	m.clampOffset()
+}
+
+// clampOffset keeps the cursor inside the visible list window and the
+// window inside the result range.
+func (m *model) clampOffset() {
+	h := m.listHeight()
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	if m.cursor >= m.offset+h {
+		m.offset = m.cursor - h + 1
+	}
+	if maxOff := len(m.results) - h; m.offset > maxOff {
+		m.offset = maxOff
+	}
+	if m.offset < 0 {
+		m.offset = 0
+	}
+}
+
+// listHeight returns how many result rows fit between the header and the
+// footer. Before the first WindowSizeMsg the height is unknown, so every
+// row is shown.
+func (m model) listHeight() int {
+	if m.height <= 0 {
+		return len(m.results)
+	}
+	// top chrome + scroll indicator line + blank line + footer
+	h := m.height - strings.Count(m.headerView(), "\n") - 2 - lipgloss.Height(m.footerView())
+	if h < 1 {
+		return 1
+	}
+	return h
 }
 
 func (m *model) deleteCurrent() {
@@ -191,7 +250,30 @@ func (m model) View() string {
 		return fmt.Sprintf("\n  %s Scanning %s…\n\n", m.spinner.View(), grayStyle.Render(m.dir))
 	}
 
-	// 2. HEADER
+	s := m.headerView()
+
+	// 2. RESULTS
+	if len(m.results) == 0 {
+		return s + secondaryStyle.Render("✓  No .terraform or .terragrunt-cache directories found.\n")
+	}
+
+	h := m.listHeight()
+	end := m.offset + h
+	if end > len(m.results) {
+		end = len(m.results)
+	}
+	for i := m.offset; i < end; i++ {
+		s += m.fitWidth(m.rowView(i)) + "\n"
+	}
+	s += m.scrollIndicator(end) + "\n"
+
+	// 3. FOOTER
+	return s + "\n" + m.footerView()
+}
+
+// headerView renders the logo + stats block, including the blank lines
+// around it. The logo is dropped on short terminals so the list keeps room.
+func (m model) headerView() string {
 	logo := selectedStyle.Render(`
   _    __ _    _  _  _
  | |_ / _| | _(_)| || |
@@ -226,90 +308,136 @@ func (m model) View() string {
 	)
 
 	header := lipgloss.JoinHorizontal(lipgloss.Center, logo, "    ", stats)
-	s := "\n" + header + "\n\n"
-
-	// 3. RESULTS
-	if len(m.results) == 0 {
-		return s + secondaryStyle.Render("✓  No .terraform or .terragrunt-cache directories found.\n")
+	if m.height > 0 && m.height < compactHeaderBelow {
+		header = lipgloss.NewStyle().PaddingLeft(2).Render(stats)
 	}
+	return "\n" + m.fitWidth(header) + "\n\n"
+}
 
+// rowView renders result i as a single line.
+func (m model) rowView(i int) string {
+	res := m.results[i]
 	pw := m.pathWidth()
 
-	for i, res := range m.results {
-		// Icon column
-		icon := "  "
+	// Icon column
+	icon := "  "
 
-		// Truncate path to pw runes before styling so lipgloss.Width()
-		// returns the true visible length we need for dot-leader math.
-		rawPath := res.Path
-		pathRunes := []rune(rawPath)
-		if len(pathRunes) > pw {
-			rawPath = string(pathRunes[:pw-1]) + "…"
-		}
-		visLen := len([]rune(rawPath))
+	// Truncate path to pw runes before styling so lipgloss.Width()
+	// returns the true visible length we need for dot-leader math.
+	rawPath := res.Path
+	pathRunes := []rune(rawPath)
+	if len(pathRunes) > pw {
+		rawPath = string(pathRunes[:pw-1]) + "…"
+	}
+	visLen := len([]rune(rawPath))
 
-		// Style the (already-truncated) path.
-		var pathCol string
-		switch {
-		case m.deleted[i] && m.cursor == i:
-			icon = grayStyle.Render("▶ ")
-			pathCol = grayStyle.Render(rawPath)
-		case m.deleted[i]:
-			icon = secondaryStyle.Render("✔ ")
-			pathCol = grayStyle.Render(rawPath)
-		case m.cursor == i && m.confirmMode:
-			icon = selectedStyle.Render("▶ ")
-			pathCol = warningStyle.Bold(true).Render(rawPath)
-		case m.cursor == i:
-			icon = selectedStyle.Render("▶ ")
-			pathCol = selectedStyle.Render(rawPath)
-		default:
-			pathCol = rawPath
-		}
-
-		// Dot leader: fills the gap between path and size column.
-		dotsCount := pw - visLen - 2 // -2 for the spaces flanking the dots
-		if dotsCount < 1 {
-			dotsCount = 1
-		}
-		dots := grayStyle.Render(strings.Repeat("·", dotsCount))
-
-		// Size column — right-aligned, fixed width
-		sizeCol := lipgloss.NewStyle().
-			Width(sizeColWidth).
-			Align(lipgloss.Right).
-			Foreground(green).
-			Render(formatSize(res.Size))
-
-		// Warning column
-		warnCol := ""
-		if res.HasState && !m.deleted[i] {
-			warnCol = warningStyle.Render(" ⚠  local state")
-		}
-
-		s += icon + pathCol + " " + dots + " " + sizeCol + warnCol + "\n"
+	// Style the (already-truncated) path.
+	var pathCol string
+	switch {
+	case m.deleted[i] && m.cursor == i:
+		icon = grayStyle.Render("▶ ")
+		pathCol = grayStyle.Render(rawPath)
+	case m.deleted[i]:
+		icon = secondaryStyle.Render("✔ ")
+		pathCol = grayStyle.Render(rawPath)
+	case m.cursor == i && m.confirmMode:
+		icon = selectedStyle.Render("▶ ")
+		pathCol = warningStyle.Bold(true).Render(rawPath)
+	case m.cursor == i:
+		icon = selectedStyle.Render("▶ ")
+		pathCol = selectedStyle.Render(rawPath)
+	default:
+		pathCol = rawPath
 	}
 
-	// 4. FOOTER
-	s += "\n"
-	if m.deleteErr != "" {
-		s += warningStyle.Bold(true).Render("✗  " + m.deleteErr)
-	} else if m.confirmMode {
+	// Dot leader: fills the gap between path and size column.
+	dotsCount := pw - visLen - 2 // -2 for the spaces flanking the dots
+	if dotsCount < 1 {
+		dotsCount = 1
+	}
+	dots := grayStyle.Render(strings.Repeat("·", dotsCount))
+
+	// Size column — right-aligned, fixed width
+	sizeCol := lipgloss.NewStyle().
+		Width(sizeColWidth).
+		Align(lipgloss.Right).
+		Foreground(green).
+		Render(formatSize(res.Size))
+
+	// Warning column
+	warnCol := ""
+	if res.HasState && !m.deleted[i] {
+		warnCol = warningStyle.Render(" ⚠  local state")
+	}
+
+	return icon + pathCol + " " + dots + " " + sizeCol + warnCol
+}
+
+// scrollIndicator shows the visible range when the list does not fit.
+func (m model) scrollIndicator(end int) string {
+	total := len(m.results)
+	if m.offset == 0 && end == total {
+		return grayStyle.Render(fmt.Sprintf("  %d folders", total))
+	}
+	more := ""
+	if m.offset > 0 {
+		more += "  ↑ more above"
+	}
+	if end < total {
+		more += "  ↓ more below"
+	}
+	return grayStyle.Render(fmt.Sprintf("  %d–%d of %d%s", m.offset+1, end, total, more))
+}
+
+func (m model) footerView() string {
+	switch {
+	case m.deleteErr != "":
+		return warningStyle.Bold(true).Width(m.width).Render("✗  " + m.deleteErr)
+	case m.confirmMode:
 		action := "delete"
 		if m.dryRun {
 			action = "mark as would-delete"
 		}
-		s += warningStyle.Bold(true).Render(
+		return m.fitWidth(warningStyle.Bold(true).Render(
 			fmt.Sprintf("⚠  Local state detected. %s anyway? ", action),
-		)
-		s += renderHelp([][2]string{{"y", "yes"}, {"n / esc", "no"}})
-	} else if m.dryRun {
-		s += renderHelp([][2]string{{"↑↓ / jk", "navigate"}, {"space", "simulate delete"}, {"q", "quit"}})
-	} else {
-		s += renderHelp([][2]string{{"↑↓ / jk", "navigate"}, {"space", "delete"}, {"q", "quit"}})
+		) + renderHelp([][2]string{{"y", "yes"}, {"n / esc", "no"}}))
 	}
+	action := "delete"
+	if m.dryRun {
+		action = "simulate delete"
+	}
+	return m.fitWidth(renderHelp([][2]string{
+		{"↑↓ / jk", "navigate"}, {"pgup/pgdn · g/G", "jump"}, {"space", action}, {"q", "quit"},
+	}))
+}
 
-	return s
+// fitWidth truncates every line of s to the terminal width so nothing wraps
+// and throws off the line count used for scrolling.
+func (m model) fitWidth(s string) string {
+	if m.width <= 0 {
+		return s
+	}
+	return lipgloss.NewStyle().MaxWidth(m.width).Render(s)
+}
+
+// Summary is printed after the program exits, since the alt screen is
+// cleared on quit.
+func (m model) Summary() string {
+	if m.isScanning {
+		return ""
+	}
+	label := "Space saved"
+	if m.dryRun {
+		label = "Would free"
+	}
+	deleted := 0
+	for _, d := range m.deleted {
+		if d {
+			deleted++
+		}
+	}
+	return fmt.Sprintf("tfkill: %d of %d folders removed · %s: %s · releasable: %s",
+		deleted, len(m.results), label, formatSize(m.totalSaved), formatSize(m.totalReleasable))
 }
 
 // formatSize returns a human-readable size string that adapts its unit
