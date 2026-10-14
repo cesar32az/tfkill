@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/cesar32az/tfkill/internal/ui"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"github.com/cesar32az/tfkill/internal/ui"
 )
 
 var dryRun bool
@@ -29,10 +29,17 @@ var rootCmd = &cobra.Command{
 		}
 
 		m := ui.InitialModel(dir, dryRun)
-		p := tea.NewProgram(m)
-		if _, err := p.Run(); err != nil {
+		// Alt screen gives the TUI a fixed-size canvas so long result lists
+		// scroll inside the window instead of pushing the header off-screen.
+		p := tea.NewProgram(m, tea.WithAltScreen())
+		final, err := p.Run()
+		if err != nil {
 			fmt.Printf("Error starting the UI: %v", err)
 			os.Exit(1)
+		}
+		// The alt screen is cleared on exit; print a short summary instead.
+		if s, ok := final.(interface{ Summary() string }); ok {
+			fmt.Println(s.Summary())
 		}
 	},
 }
